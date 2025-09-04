@@ -59,6 +59,22 @@ jobs:
             --build-arg NEXT_PUBLIC_LANGFUSE_TRACING_SAMPLE_RATE=${{ vars.NEXT_PUBLIC_LANGFUSE_TRACING_SAMPLE_RATE }} \
             .
           docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+      - name: Set default task definition path
+        run: echo "TASKDEF_PATH=infra/ecs/taskdef-${{ inputs.service }}.json" >> $GITHUB_ENV
+      - name: Rewrite SSM parameter paths for staging
+        if: ${{ inputs.environment == 'staging' }}
+        run: |
+          jq --arg env "${{ inputs.environment }}" \
+            '.containerDefinitions[0].secrets |= (map(.valueFrom |= gsub("/prod/"; ("/" + $env + "/"))))' \
+            "infra/ecs/taskdef-${{ inputs.service }}.json" > /tmp/taskdef.json
+          echo "TASKDEF_PATH=/tmp/taskdef.json" >> $GITHUB_ENV
+      - name: Staging only - disable startup migrations for web
+        if: ${{ inputs.environment == 'staging' && inputs.service == 'web' }}
+        run: |
+          # Merge/override env vars to disable DB/ClickHouse migrations at startup for staging web
+          tmp=$(mktemp)
+          jq -c '.containerDefinitions[0].environment = ((.containerDefinitions[0].environment // [] | map({(.name): .value}) | add) + {"LANGFUSE_AUTO_POSTGRES_MIGRATION_DISABLED":"true","LANGFUSE_AUTO_CLICKHOUSE_MIGRATION_DISABLED":"true"} | to_entries | map({name: .key, value: .value}))' "$TASKDEF_PATH" > "$tmp"
+          mv "$tmp" "$TASKDEF_PATH"
       - name: Render AWS ECS Task Definition
         id: render-task-definition
         uses: aws-actions/amazon-ecs-render-task-definition@v1
